@@ -21,6 +21,7 @@
 static char *const command  = "/usr/bin/redshift -v -O %d";
 static char *const icon_on  = "redshift-status-on";
 static char *const icon_off = "redshift-status-off";
+static char text[] = "100% |||||||||||||||||||||||||||||||||||||||||||||";
 
 void notifyInit(NotifyNotification **notification)
 {
@@ -44,8 +45,20 @@ int notify(NotifyNotification **notification, int red, int min, int max)
     if (*notification == NULL)
         notifyInit(notification);
 
-    notify_notification_update(*notification, "Red", NULL, red == max ? icon_off : icon_on);
-    notify_notification_set_hint_int32(*notification, "value", 100 * (red - min) / (max - min));
+    unsigned int value = 100 * (red - min) / (max - min);
+
+    if (text[0] != '\0') {
+        if (value > 100) value = 100;
+        sprintf(text, "%3u%% ", value);
+        const unsigned int top = 5 + (sizeof(text) - 5 - 1) * value / 100;
+        for (unsigned int i = 5; i < top; i++)
+           text[i] = '|';
+        text[top] = '\0';
+        value = 0;
+    }
+
+    notify_notification_update(*notification, "Red", text, red == max ? icon_off : icon_on);
+    notify_notification_set_hint_uint32(*notification, "value", value);
 
     GError *error = NULL;
     notify_notification_show(*notification, &error);
@@ -105,7 +118,7 @@ void processMessages(int sock)
 
         arg[n] = '\0';
         int num = getRed(arg, red, RED_MIN, RED_MAX);
-        if (num != red && snprintf(buffer, sz, command, num) > 0) {
+        if (snprintf(buffer, sz, command, num) > 0) {
             red = num;
             system(buffer);
             // FIXME: Sometimes gives error:
@@ -124,9 +137,11 @@ void processMessages(int sock)
 
 void help(char const *cmd)
 {
-    printf("Usage: %s           Runs server (before next command can be used).\n", cmd);
-    printf("       %s AMOUNT    Makes the screen redder or less red by AMOUNT.\n", cmd);
-    exit(0);
+    printf("Usage: %s [-t]\n"
+           "  Runs server. Server needs to be started before setting red value.\n"
+           "  Use -t parameter to show text in notification instead of graphical bar.\n"
+           "Usage: %s AMOUNT\n"
+           "  Makes the screen redder or less red by an AMOUNT.\n", cmd, cmd);
 }
 
 int initClient()
@@ -168,21 +183,29 @@ int initServer()
 
 int main(int argc, const char *argv[])
 {
-    int sock;
-    pid_t pid = 0;
+    text[0] = '\0';
 
     if (argc == 2) {
-        if (strcmp("-h", argv[1]) == 0 || strcmp("--help", argv[1]) == 0)
+        if (strcmp("-h", argv[1]) == 0 || strcmp("--help", argv[1]) == 0) {
             help(argv[0]);
-        sock = initClient();
-        sendMessage(sock, argv[1]);
-    } else {
-        sock = initServer();
-        pid_t pid = fork();
-        if (pid == 0)
-            processMessages(sock);
+            return EXIT_SUCCESS;
+        } else if (strcmp("-t", argv[1]) == 0) {
+            text[0] = '1';
+        } else {
+            int sock = initClient();
+            sendMessage(sock, argv[1]);
+            close(sock);
+            return EXIT_SUCCESS;
+        }
+    } else if (argc > 2) {
+        help(argv[0]);
+        return EXIT_FAILURE;
     }
 
+    int sock = initServer();
+    pid_t pid = fork();
+    if (pid == 0)
+        processMessages(sock);
     close(sock);
 
     return pid >= 0 ? EXIT_SUCCESS : EXIT_FAILURE;
